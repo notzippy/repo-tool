@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+    "regexp"
 )
 
 const baseRepo = ".repo-tool"
@@ -31,9 +32,10 @@ type (
 	Repo struct {
 		Root           string // The root checkout
 		Branch         string
+        GroupList      []string // The groups of projects to be imported
 		RemoteMap      map[string]*Remote  // Keyed by name
 		ProjectMap     map[string]*Project // Keyed by name
-		ProjectDefault *Project            // Keyed by name
+		ProjectDefault *Project
 	}
 	Manifest struct {
 		XMLName        xml.Name   `xml:"manifest"`
@@ -49,6 +51,8 @@ type (
 		Revision           string `xml:"revision,attr"`
 		Path               string `xml:"path,attr"`
 		Review             string `xml:"review,attr"`
+        GroupList        []string                        // Note groups in notdefault will not be downloaded
+        Groups             string  `xml:"groups,attr"`   // Note groups in notdefault will not be downloaded
         CloneDepth         string `xml:"clone-depth,attr"`
 		Url                string // The remote url
 		PrimaryBareGitPath string // project-objects
@@ -110,44 +114,66 @@ func main() {
         fmt.Println("Success - no errors detected")
     }
 }
+
+// Initialize the project, recognized options are
+// -u The URL  of the remote manifest repository (Required)
+// -b The branch of the remote manifest repository (defaults to master)
+// -g A comma delimited list of groups to download
 func repoInit() (err error) {
-	var url, branch string
+	var url, branch, groups string
 	mySet := flag.NewFlagSet("", flag.ExitOnError)
 	mySet.StringVar(&url, "u", "", "a url")
 	mySet.StringVar(&branch, "b", "", "a branch")
+	mySet.StringVar(&groups, "g", "", "a group")
 	mySet.Parse(os.Args[2:])
 	if len(url) == 0 {
-		fmt.Println("Url required")
-		return
+		return fmt.Errorf("Url required")
 	}
-
-	os.RemoveAll(baseRepo)
 
 	var args []string
 	if len(branch) > 0 {
 		args = append(args, "-b", branch)
 	}
-	if _, err = gitClone(url,
-		filepath.Join(baseRepo, "manifests"),
-		"",
-		args); err != nil {
-		return
-	}
 
-	relativeToRepo(filepath.Join(baseRepo, "manifest.xml"))
-	// os.Symlink(filepath.Join(relativeToRepo(filepath.Join(baseRepo, "manifest.xml")), baseRepo, "manifests", "default.xml"), filepath.Join(baseRepo, "manifest.xml"))
-
-	// Read in the xml file, since the repo isnt a simple file read it into a map first
-	projectRepo := Repo{
+    projectRepo := Repo{
 		Root:       url,
 		Branch:     branch,
+        GroupList:  strings.Split(groups,","),
 		ProjectMap: make(map[string]*Project),
 		RemoteMap:  make(map[string]*Remote),
 	}
+
+    if project, err := fetchRepo(); err == nil {
+        project.Root = url
+        project.Branch = branch
+        project.GroupList = strings.Split(groups,",")
+        projectRepo = *project
+    } else {
+        relativePath=""
+    }
+
+
 	i := strings.LastIndex(url, "/")
 	if i > 0 {
 		projectRepo.Root = url[:i]
 	}
+
+    // Check to see if the manifest file exists, if so we need to update, not clone
+    if _,e:=os.Stat(filepath.Join(relativePath,baseRepo, "manifests"));e==nil {
+        if syncManifest(&projectRepo)!=nil {
+            fmt.Printf("You may want to consider removing your manifest folder");
+            return err
+        }
+    } else {
+        if _, err = gitClone(url,
+            filepath.Join(relativePath,baseRepo, "manifests"),
+            "",
+            args); err != nil {
+                return
+        }
+    }
+
+
 	// We need to write it because the next step we resync
 	if err = writeProject(&projectRepo); err != nil {
 		return
@@ -180,34 +206,46 @@ func writeProject(projectRepo *Repo) (err error) {
 	}
 	return
 }
-
-func repoSync(existingRepo *Repo) (err error) {
-	// Sync the manifest first
+func syncManifest(repo *Repo) (err error) {
 	if _, err = gitSync(
 		filepath.Join(relativePath, baseRepo, "manifests"),
 		"origin",
-		existingRepo.Branch, nil); err != nil {
-		fmt.Println("Failed to sync manifests", err)
-		return
+		repo.Branch, nil); err != nil {
+
+		return fmt.Errorf("Failed to sync manifests %v", err)
 	}
+    return err
+}
+func repoSync(existingRepo *Repo) (err error) {
+	if err = syncManifest(existingRepo);err!=nil {
+        return err
+	}
+	// Sync the manifest first
 	projectRepo := Repo{
 		Root:       existingRepo.Root,
 		Branch:     existingRepo.Branch,
+        GroupList:  existingRepo.GroupList,
 		ProjectMap: make(map[string]*Project),
 		RemoteMap:  make(map[string]*Remote),
 	}
 	if err=refreshProjectRepo(&projectRepo);err!=nil {
 		return
 	}
+
+    // Make sure the passed in manifest parameters are persisted after reload of json
+    projectRepo.Root = existingRepo.Root
+    projectRepo.Branch = existingRepo.Branch
+    projectRepo.GroupList = existingRepo.GroupList
+
+    // fmt.Printf("Current group %#v %d\n",projectRepo.GroupList, len(existingRepo.ProjectMap))
 	if len(existingRepo.ProjectMap) > 0 {
 		// Check to see if the projects have been moved, or paths have changed
 		for _, p := range existingRepo.ProjectMap {
 			found := false
 
-			// fmt.Println("Map ", len(projectRepo.ProjectMap))
 			for _, pnew := range projectRepo.ProjectMap {
-				//fmt.Println("Checking",pnew.Url, p.Url)
 				if pnew.Url == p.Url {
+
 					if pnew.Path != p.Path {
 						destination := filepath.Join(relativePath, pnew.Path)
 						base := filepath.Base(destination)
@@ -220,15 +258,23 @@ func repoSync(existingRepo *Repo) (err error) {
 					break
 				}
 			}
+
+            if found && !p.InGroupList(projectRepo.GroupList) {
+                // Force the removal of the project to the trash
+                found = false
+            }
 			if !found {
-				// Move the project into the trash, if not in new list
-				destination := filepath.Join(relativePath, ".trash", p.Path)
-				base := filepath.Base(destination)
-				os.MkdirAll(destination[:len(destination)-len(base)], os.ModePerm)
-				fmt.Println("Moving project", p.Name, "Into .trash")
-				if err = os.Rename(filepath.Join(relativePath, p.Path), destination); err != nil {
-					return
-				}
+                // Check to see if project exists in path before removing
+                if _,e:= os.Stat(filepath.Join(relativePath,p.Path));e==nil {
+                    // Move the project into the trash, if not in new list
+                    destination := filepath.Join(relativePath, ".trash", p.Path)
+                    base := filepath.Base(destination)
+                    os.MkdirAll(destination[:len(destination)-len(base)], os.ModePerm)
+                    fmt.Println("Moving project", p.Name, "Into .trash")
+                    if err = os.Rename(filepath.Join(relativePath, p.Path), destination); err != nil {
+                        return
+                    }
+                }
 			}
 		}
 	}
@@ -237,15 +283,19 @@ func repoSync(existingRepo *Repo) (err error) {
 	// For each item in the repo checkout the source tree
 	var wg sync.WaitGroup
 	for _, project := range projectRepo.ProjectMap {
-		wg.Add(1)
-		go func(mproject *Project) {
-			defer wg.Done()
-			if e := mproject.checkout(); e != nil {
-                ThereWasErrors = true
-				fmt.Println("Error sync ", mproject.Name, err)
-			}
+        if project.InGroupList(projectRepo.GroupList) {
+            wg.Add(1)
+            go func(mproject *Project) {
+                defer wg.Done()
+                if e := mproject.checkout(); e != nil {
+                    ThereWasErrors = true
+                    fmt.Println("Error sync ", mproject.Name, err)
+                }
 
-		}(project)
+            }(project)
+        } else {
+            fmt.Println("Skipping project",project.Name,projectRepo.GroupList)
+        }
 	}
 	wg.Wait()
 
@@ -344,7 +394,7 @@ func (r *Repo) Parse(id string, data []byte) (err error) {
 			}
 			r.RemoteMap[remote.Name] = remote
 		}
-		fmt.Printf("Remotes %#v", r.RemoteMap)
+
 		if r.ProjectDefault == nil {
 			if decoded.ProjectDefault != nil {
 				r.ProjectDefault = decoded.ProjectDefault
@@ -354,6 +404,7 @@ func (r *Repo) Parse(id string, data []byte) (err error) {
 
 		}
 		for _, project := range decoded.ProjectList {
+            // Initialize projects based on combination of default and remote
 			if r.ProjectDefault != nil {
 				if len(project.RemoteKey) == 0 {
 					project.RemoteKey = r.ProjectDefault.RemoteKey
@@ -386,14 +437,15 @@ func (r *Repo) Parse(id string, data []byte) (err error) {
 				if strings.HasPrefix("..", repo.Fetch) {
 					// This is a relative url
 					if len(repo.Fetch) > 2 {
-						url = r.Root + "/" + repo.Fetch[2:] + "/" + project.Name
+						url = joinURL(r.Root , repo.Fetch[2:] , project.Name)
 					} else {
-						url = r.Root + "/" + project.Name
+						url = joinURL(r.Root ,project.Name)
 					}
 				} else {
-					url = repo.Fetch + "/" + project.Name
+					url = joinURL(repo.Fetch , project.Name)
 				}
 			}
+            // Initialize calculate values
 			project.Url = url
 			project.PrimaryBareGitPath = filepath.Join(filepath.Join(baseRepo, "project-objects"), project.Name+".git")
 			project.SecondaryGitPath = filepath.Join(filepath.Join(baseRepo, "projects"), project.Path, ".git")
@@ -408,10 +460,52 @@ func (r *Repo) Parse(id string, data []byte) (err error) {
                 BranchRevision =BranchRevision[len("refs/tags/"):]
             }
             project.BranchRevision=BranchRevision
+            project.GroupList=regexp.MustCompile(`[\ ,\,]`).Split(project.Groups,-1)
 		}
 	}
 
 	return
+}
+func joinURL(parts ...string) (string) {
+    for i,p:=range parts {
+        parts[i]=strings.TrimSuffix(p,"/")
+    }
+    return strings.Join(parts,"/")
+}
+
+// Returns true if project is in group list
+// if groupList to be checked is empty then
+// result is true unless this project contains a
+// group call `notdefault`
+func (p *Project) InGroupList(groupList[]string)(bool) {
+    if len(groupList)==0 {
+        // Exclude default Projects
+        return !p.HasGroup("notdefault")
+    }
+
+    for _,g:=range groupList {
+        if g=="" && !p.HasGroup("notdefault") {
+            return true
+        } else if p.HasGroup(g) {
+            return true
+        }
+    }
+
+    return false
+}
+
+// Return true if group is in this projects group list
+func (p *Project) HasGroup(group string)(bool) {
+    if len(p.GroupList)==0 {
+        return group!="notdefault"
+    }
+    for _,g:= range p.GroupList {
+        if g==group {
+            return true
+        }
+    }
+
+    return false
 }
 
 // Called to checkout a project, creates the neccessary path to target folder
@@ -490,6 +584,7 @@ func fetchRepo() (therepo *Repo,err error) {
 
     // Check the existance of the projectFile using the relative path
 	_, e := os.Stat(filepath.Join(relativePath, projectFile))
+    fmt.Println("Checked",filepath.Join(relativePath, projectFile),e)
 
     // If not found attempt to go up directory tree
 	for e != nil {
@@ -504,6 +599,7 @@ func fetchRepo() (therepo *Repo,err error) {
 
     // If able to read file, call the parse and return the repo
 	if b, err := ioutil.ReadFile(filepath.Join(relativePath, projectFile)); err != nil {
+        relativePath=""
 		return nil, err
 	} else  if e := json.Unmarshal(b, repo); e != nil {
         return repo, e
@@ -527,356 +623,3 @@ func relativeToRepo(path string) string {
 	}
 	return relativepath
 }
-
-//func inList(item string, list []string) bool {
-//	for _,i := range list {
-//		if i==item {
-//			return true
-//		}
-//	}
-//	return false
-//}
-//
-//func cp(src,dst string) error {
-//	s, err := os.Open(src)
-//	if err != nil {
-//		return err
-//	}
-//	// no need to check errors on read only file, we already got everything
-//	// we need from the filesystem, so nothing can go wrong now.
-//	defer s.Close()
-//	d, err := os.Create(dst)
-//	if err != nil {
-//		return err
-//	}
-//	if _, err := io.Copy(d, s); err != nil {
-//		d.Close()
-//		return err
-//	}
-//	return d.Close()
-//}
-//
-
-//func repoInit() (err error) {
-//	// Fetch the flags from the init
-//	var url,branch string
-//	mySet := flag.NewFlagSet("",flag.ExitOnError)
-//	mySet.StringVar(&url,"u","","a url")
-//	mySet.StringVar(&branch,"b","","a branch")
-//	mySet.Parse(os.Args[2:])
-//	if len(url)==0 {
-//		fmt.Println("Url required")
-//		return
-//	}
-//	//baseRepo :=".repo" //,_ :=filepath.Abs("./.repo")
-//	os.RemoveAll(baseRepo)
-//	os.MkdirAll(".repo/project-objects",os.ModePerm);
-//
-//	//var res *git.Repo
-//	var args  []string
-//	if len(branch)>0 {
-//		args = append(args,"-b",branch)
-//	}
-//	if err = checkout(url,
-//		filepath.Join(baseRepo,"manifests"),
-//		filepath.Join(baseRepo,"manifests.git"),
-//		args);err!=nil {
-//		return;
-//	}
-//
-//	// Link the manifest file to the one checked out
-//	relativeToRepo(filepath.Join(baseRepo,"manifest.xml"))
-//	os.Symlink(filepath.Join(relativeToRepo(filepath.Join(baseRepo,"manifest.xml")),baseRepo,"manifests","default.xml"),filepath.Join(baseRepo,"manifest.xml"))
-//
-//	// Read in the xml file, since the repo isnt a simple file read it into a map first
-//	projectRepo := Repo{
-//		Root: url,
-//		ProjectMap:make(map[string]*Project),
-//		RemoteMap:make(map[string]*Remote),
-//	}
-//	i :=strings.LastIndex(url,"/")
-//	if i>0 {
-//		/*
-//		r:=strings.Split(url,"/")
-//		projectRepo.Root=strings.Join(r[:len(r)-1],"")
-//		*/
-//		projectRepo.Root=url[:i]
-//	}
-//
-//	if data,err:=ioutil.ReadFile(filepath.Join(baseRepo,"manifests","default.xml"));err!=nil {
-//		return err
-//	}   else {
-//		if  err = projectRepo.Parse(filepath.Join(baseRepo,"manifests","default.xml"),data);err!=nil {
-//			return err
-//		}
-//
-//	}
-//
-//	// Dump the project repo to the baseRepo folder
-//	if b,e:=json.Marshal(projectRepo);e!=nil {
-//		return e;
-//	} else {
-//		err= ioutil.WriteFile(projectFile,b,os.ModePerm)
-//	}
-//   return
-//}
-//func repoSync() (err error){
-//	args := os.Args[2:]
-//	var projectRepo *Repo
-//	if projectRepo,err=fetchRepoProject();err!=nil {
-//		return
-//	}
-//
-//	if len(args)==0 {
-//		// Checkout remainder of projects
-//		if err=projectRepo.CheckoutRepo();err!=nil {
-//			fmt.Errorf("Unexpected errror checkout %#v\n",err)
-//		} else {
-//			if err=projectRepo.SyncRepo();err!=nil {
-//				fmt.Errorf("Unexpected errror sync %#v\n",err)
-//
-//			}
-//		}
-//	}
-//
-//	// Now sync source with file system link the paths dynamically
-//	// This should require nothing more then creating the path and making a symlink to the real git repo
-////	if err=projectRepo.Checkout();err!=nil {
-////		fmt.Errorf("Unexpected errror %#v\n",err)
-////	}
-//	return
-//}
-///*
-//func (r *Repo) Checkout() (err error) {
-//	// For each project checkout just the repository
-//	// The repository will just checkout the git dir
-//	projectObjects := filepath.Join(baseRepo,"project-objects")
-//	for _,project:=range r.ProjectMap {
-//		os.MkdirAll(project.Path,os.ModePerm)
-//		a,_:=filepath.Abs(filepath.Join(projectObjects,project.Name))
-//		if err = os.Symlink(a,filepath.Join(project.Path,".git"));err!=nil {
-//			return err;
-//		}
-//
-//	}
-//	return
-//}
-//*/
-//func (r *Repo) CheckoutRepo() (err error) {
-//	// For each project checkout just the repository
-//	// The repository will just checkout the git dir
-//	fmt.Println("Checking out repositories")
-//	for _,project:=range r.ProjectMap {
-//		// Url is resolved, now we need to determine the path
-//
-//		if err=project.checkout();err!=nil {
-//			return;
-//		}
-//		if _,e:=os.Stat(project.SecondaryGitPath);e!=nil {
-//			if err = symlinkProject(false,project.PrimaryBareGitPath,project.SecondaryGitPath); err != nil {
-//				return;
-//			}
-//		}
-//		// Update the config file in the secondary repository with revision data
-//		if err=project.updateSecondaryConfig();err!=nil {
-//			return
-//		}
-//	}
-//	return
-//}
-//
-//func (r *Repo) SyncRepo() (err error) {
-//	// For each project checkout just the repository
-//	// The repository will just checkout the git dir
-//
-//	for _,project:=range r.ProjectMap {
-//		// Url is resolved, now we need to determine the path
-//
-//		if err=project.syncLocal();err!=nil {
-//			return
-//		}
-//	}
-//	return
-//}
-//
-//// Synchronize the local directory tree
-//// Includes creating directories based on the projects path
-//func (p *Project) syncLocal() (err error) {
-//	// Check for existence of git folder, if it does not exist create a sim link for it, pointing to the secondary one
-//	if _,e:=os.Stat(p.SourceGitPath);e!=nil {
-//		os.MkdirAll(p.Path,os.ModePerm)
-//		if err = symlinkProject(true, p.SecondaryGitPath, p.SourceGitPath);err!=nil {
-//			return
-//		}
-//	}
-//	GitCmdCall("checkout","",p.SourcePath,nil)
-//
-//	return
-//}
-//func (p *Project) checkout() (err error) {
-//	if _,e:=os.Stat(p.PrimaryBareGitPath);e==nil {
-//		err=fetch(p.Url, p.PrimaryBareGitPath,nil)
-//	} else {
-//		checkout(p.Url,p.PrimaryBareGitPath,"",[]string{"--bare"})
-//	}
-//
-//
-//	return;
-//}
-//type GitCmd struct {
-//	Command string
-//	Path string
-//	WorkingDir string
-//	Args []string
-//}
-//func (p *Project) updateSecondaryConfig() (err error) {
-//	// Initialize git in the primary config
-//	/*
-//	if err=GitCmd(p.PrimaryBareGitPath,"init",nil);err!=nil {
-//		return
-//	}
-//	*/
-//	configPath := filepath.Join(p.SecondaryGitPath,"config")
-//	commandList := []GitCmd{
-//		{"init",p.PrimaryBareGitPath,"",nil},
-//		{"config",p.PrimaryBareGitPath,"",[]string{"--file",configPath,"--unset-all","core.bare"}},
-//		{"config",p.PrimaryBareGitPath,"",[]string{"--file",configPath,"--replace-all",fmt.Sprintf("remote.%s.url",p.RemoteKey),p.Url}},
-//		{"config",p.PrimaryBareGitPath,"",[]string{"--file",configPath,"--replace-all",fmt.Sprintf("remote.%s.review",p.RemoteKey),p.Review}},
-//		{"config",p.PrimaryBareGitPath,"",[]string{"--file",configPath,"--replace-all",fmt.Sprintf("remote.%s.projectname",p.RemoteKey),p.Name}},
-//		{"config",p.PrimaryBareGitPath,"",[]string{"--file",configPath,"--replace-all",fmt.Sprintf("remote.%s.fetch",p.RemoteKey),fmt.Sprintf("+refs/heads/*:refs/remotes/%s/*",p.RemoteKey)}},
-//		{"init",p.SecondaryGitPath,"",nil},
-//		{"fetch",p.SecondaryGitPath,"",[]string{p.RemoteKey,"--tags",fmt.Sprintf("+%s:refs/remotes/%s/%s",p.Revision,p.RemoteKey,filepath.Base(p.Revision))}},
-//		{"pack-refs",p.SecondaryGitPath,"",[]string{"--all","--prune"}},
-//	}
-//
-//
-//	return processGitCommandList(commandList)
-//}
-//
-//// Called to update the project folder
-//// creates a folder with the path specified in the p.SecondaryGitPath
-//// Then copies all files to the shared folder
-//// except the following files and folders will be linked using a relative path to the parent.
-////    symlink_files = ['description', 'info']
-////    symlink_dirs = ['hooks', 'objects', 'rr-cache', 'svn']
-////    if share_refs:
-////      # These objects can only be used by a single working tree.
-////      symlink_files += ['config', 'packed-refs', 'shallow']
-////      symlink_dirs += ['logs', 'refs']
-//func symlinkProject(ref bool,source,destination string) (err error) {
-//	os.MkdirAll(destination,os.ModePerm)
-//	// Store relative path to this repo
-//	rpath := relativeToRepo(destination);
-//	//copySource := path.Dir(source)
-//	//copyDestination := path.Dir(destination)
-//
-//	// Create missing content in master to provided links for
-//	files := reposymlinkFile
-//	dirs := reposymlinkDir
-//	if ref {
-//		files = reposymlinkRefFile
-//		dirs = reposymlinkRefDir
-//	}
-//	for _, file := range files {
-//		newFile := filepath.Join(source, file)
-//		if _,e:=os.Stat(newFile);e!=nil {
-//			// Missing file create an empty one
-//			if err=ioutil.WriteFile(newFile,nil,os.ModePerm);err!=nil {
-//				return
-//			}
-//		}
-//	}
-//	for _, dir := range dirs {
-//		newDir := filepath.Join(source, dir)
-//		if _,e:=os.Stat(newDir);e!=nil {
-//			// Missing file create an empty one
-//			if err=os.MkdirAll(newDir,os.ModePerm);err!=nil {
-//				return
-//			}
-//		}
-//	}
-//
-//	if content,err:=ioutil.ReadDir(source);err!=nil {
-//		return err
-//	} else {
-//		for _, fullFile := range content {
-//			file := fullFile.Name()
-//			var symLink bool
-//			if ref {
-//				symLink = inList(file, reposymlinkRefFile) || inList(file, reposymlinkRefDir)
-//			} else {
-//				symLink = inList(file, reposymlinkFile) || inList(file, reposymlinkDir)
-//			}
-//
-//			if symLink {
-//				if err = os.Symlink(filepath.Join(rpath, source, file), filepath.Join(destination, file)); err != nil {
-//					return err;
-//				}
-//			}  else {
-//				// Copy the file
-//				if !fullFile.IsDir() {
-//					if err = cp(filepath.Join(source, file), filepath.Join(destination, file)); err != nil {
-//						return err
-//					}
-//				}
-//			}
-//
-//		}
-//	}
-//
-//	return
-//	/*
-//	os.MkdirAll(p.SecondaryGitPath,os.ModePerm)
-//	// Store relative path to this repo
-//	rpath := relativeToRepo(p.SecondaryGitPath);
-//
-//	if err = os.Symlink(filepath.Join(rpath,p.PrimaryBareGitPath,"hooks"),filepath.Join(p.SecondaryGitPath,"hooks"));err!=nil {
-//		return err;
-//	}
-//	fmt.Println("Relative",rpath, p.SecondaryGitPath)
-//
-//	return
-//	*/
-//}
-//var (
-////	reposymlinkFile = []string{"description", "info"}
-////	reposymlinkDir = []string{"hooks","objects","rr-cache","svn"}
-////	reposymlinkRefFile = []string{"description", "info","config","packed-refs","shallow"}
-////	reposymlinkRefDir = []string{"hooks","objects","rr-cache","svn","logs","refs"}
-//)
-//func fetch(source, target string,args []string) ( err error) {
-//	/*
-//	cmd, _, stderr := Git("fetch", append([]string{"-C", target},args...)...)
-//	cmd.Stdout = os.Stdout
-//	cmd.Stderr = os.Stderr
-//	if err = cmd.Run(); err != nil {
-//		return errors.New(stderr.String())
-//	}
-//	*/
-//	return GitCmdCall("fetch",target,"",args)
-//}
-//func processGitCommandList(list []GitCmd)(err error) {
-//	for _,r:=range list {
-//		if err=GitCmdCall(r.Command,r.Path,r.WorkingDir,r.Args);err!=nil {
-//			return
-//		}
-//	}
-//	return
-//}
-//func GitCmdCall(command,source, workingDir string,args []string) ( err error) {
-//	cmd, _, stderr := Git(command, args...)
-//	if len(source)>0 {
-//		cmd.Env = append(cmd.Env, "GIT_DIR="+source)
-//	}
-//	cmd.Stdout = os.Stdout
-//	cmd.Stderr = os.Stderr
-//	if len(workingDir)>0 {
-//		wd,_:=os.Getwd()
-//		cmd.Dir = filepath.Join(wd, workingDir)
-//	}
-//	if err = cmd.Run(); err != nil {
-//		fmt.Println("Error in run",err)
-//		return errors.New(stderr.String())
-//	}
-//	return
-//}

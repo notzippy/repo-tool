@@ -102,6 +102,16 @@ been extensively tested. If not supplied the revision given by
 the remote element is used if applicable, else the default
 element is used.
 
+Attribute `groups`: List of groups to which this project belongs,
+whitespace or comma separated.  All projects belong to the group
+"all", and each project automatically belongs to a group of
+its name:`name` and path:`path`.  E.g. for
+<project name="monkeys" path="barrel-of"/>, that project
+definition is implicitly in the following manifest groups:
+default, name:monkeys, and path:barrel-of.  If you place a project in the
+group "notdefault", it will not be automatically downloaded by repo.
+
+
 Element remove-project
 ----------------------
 Deletes the named project from the internal manifest table, possibly
