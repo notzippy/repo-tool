@@ -27,3 +27,5 @@ Future work to do (in no particular order)
 Each project is checked out using the url, revision and path specified in the project manifest file. When the project is checked out
 the branch is not in a detached state, it is pointing to the branch specified in the manifest file.
 
+[Updates]
+Added -j flag, applicable to both sync and init, defaults to 1 job, can be set higher

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"strconv"
 	"sync"
 	"time"
     "regexp"
@@ -85,7 +86,7 @@ func main() {
 	fmt.Printf("Start time %s\n", start.Format(time.ANSIC))
 	switch os.Args[1] {
 	case "init":
-		if err := repoInit(); err != nil {
+		if err := repoInit(os.Args[2:]); err != nil {
 			fmt.Println("Error init ", err)
             ThereWasErrors = true
 		}
@@ -93,7 +94,7 @@ func main() {
 		if project, err := fetchRepo(); err != nil {
 			fmt.Println("Error read project ", err)
             ThereWasErrors = true
-		} else if err := repoSync(project); err != nil {
+		} else if err := repoSync(project,os.Args[2:]); err != nil {
 			fmt.Println("Error Sync ", err)
             ThereWasErrors = true
 		}
@@ -119,13 +120,13 @@ func main() {
 // -u The URL  of the remote manifest repository (Required)
 // -b The branch of the remote manifest repository (defaults to master)
 // -g A comma delimited list of groups to download
-func repoInit() (err error) {
+func repoInit(osargs []string) (err error) {
 	var url, branch, groups string
 	mySet := flag.NewFlagSet("", flag.ExitOnError)
 	mySet.StringVar(&url, "u", "", "a url")
 	mySet.StringVar(&branch, "b", "", "a branch")
 	mySet.StringVar(&groups, "g", "", "a group")
-	mySet.Parse(os.Args[2:])
+	mySet.Parse(osargs)
 	if len(url) == 0 {
 		return fmt.Errorf("Url required")
 	}
@@ -178,7 +179,7 @@ func repoInit() (err error) {
 	if err = writeProject(&projectRepo); err != nil {
 		return
 	}
-	return repoSync(&projectRepo)
+	return repoSync(&projectRepo,osargs)
 }
 
 // Read the manifest in the repo-tool folder
@@ -216,7 +217,15 @@ func syncManifest(repo *Repo) (err error) {
 	}
     return err
 }
-func repoSync(existingRepo *Repo) (err error) {
+func repoSync(existingRepo *Repo,osargs []string) (err error) {
+    multitasksLimit := 1;
+    for _,a:=range osargs {
+        if a[:2]=="-j" {
+            i,_ :=  strconv.ParseInt(a[2:],10,8)
+            multitasksLimit = int(i)
+        }
+    }
+    fmt.Println("Limit is ", multitasksLimit)
 	if err = syncManifest(existingRepo);err!=nil {
         return err
 	}
@@ -282,17 +291,31 @@ func repoSync(existingRepo *Repo) (err error) {
 
 	// For each item in the repo checkout the source tree
 	var wg sync.WaitGroup
+    var mutex sync.Mutex
+    counter:=0
 	for _, project := range projectRepo.ProjectMap {
         if project.InGroupList(projectRepo.GroupList) {
             wg.Add(1)
+            mutex.Lock()
+            counter++
+            mutex.Unlock()
             go func(mproject *Project) {
                 defer wg.Done()
+                defer func() {
+                    mutex.Lock()
+                    counter--
+                    mutex.Unlock()
+                }()
+
                 if e := mproject.checkout(); e != nil {
                     ThereWasErrors = true
                     fmt.Println("Error sync ", mproject.Name, err)
                 }
 
             }(project)
+            if counter>=multitasksLimit {
+                wg.Wait()
+            }
         } else {
             fmt.Println("Skipping project",project.Name,projectRepo.GroupList)
         }
