@@ -25,9 +25,15 @@ const projectFile = ".repo-tool/projectRepo.json"
 var (
 	relativePath = ""
 	gitCmd       = "/usr/bin/git"
+	hgCmd        = "/usr/bin/hg"
     ThereWasErrors = false
-
 )
+
+const (
+	REPO_GIT="git"
+	REPO_HG="hg"
+)
+
 
 type (
 	Repo struct {
@@ -53,20 +59,21 @@ type (
 		Path               string `xml:"path,attr"`
 		Review             string `xml:"review,attr"`
         GroupList        []string                        // Note groups in notdefault will not be downloaded
-        Groups             string  `xml:"groups,attr"`   // Note groups in notdefault will not be downloaded
+        Groups             string `xml:"groups,attr"`   // Note groups in notdefault will not be downloaded
         CloneDepth         string `xml:"clone-depth,attr"`
+		RepoType           string `xml:"repotype,attr"` // The type of repository
 		Url                string // The remote url
 		PrimaryBareGitPath string // project-objects
 		SecondaryGitPath   string // projects
 		SourceGitPath      string // project git path as defined in the file
 		SourcePath         string // project path as defined in the file
-
 	}
 	Remote struct {
-		Name   string `xml:"name,attr"`
-		Fetch  string `xml:"fetch,attr"`
-		Review string `xml:"review,attr"`
-		Revision string `xml:"revision,attr"`
+		Name               string `xml:"name,attr"`
+		Fetch              string `xml:"fetch,attr"`
+		Review             string `xml:"review,attr"`
+		Revision           string `xml:"revision,attr"`
+		RepoType           string `xml:"repotype,attr"` // The type of repository
 	}
 )
 
@@ -350,57 +357,85 @@ func repoStatus() (err error) {
 
 // Checkout project, clones then does a checkout -b revision
 func (p *Project) checkout() (err error) {
-	if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".git")); e != nil {
-        args := []string {
-            "--branch",p.BranchRevision,
-            "-o",p.RemoteKey,
-        }
-        if p.CloneDepth!="" {
-            args =append(args,"--depth",p.CloneDepth)
-        }
+	fmt.Println("Checkout ", p.RepoType)
+	switch p.RepoType {
+	case REPO_HG : {
+		if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".hg")); e != nil {
+			// Create a hg clone
+			args := []string{
+				"--branch", p.BranchRevision,
 
-        if out, e := gitClone(p.Url, filepath.Join(relativePath, p.SourcePath), "", args);e!=nil {
-            fmt.Printf("Project %s Clone (CLONE) Error \n%s\n%v\n\n", p.Name, out, e)
-            return e
-        } else {
-            fmt.Printf("Project %s Clone (END) \n%s\n\n", p.Name, out)
-        }
+			}
+			if out, e := hgClone(p.Url, filepath.Join(relativePath, p.SourcePath), args); e != nil {
+				fmt.Printf("Project %s Clone (CLONE) Error \n%s\n%v\n\n", p.Name, out, e)
+				return e
+			} else {
+				fmt.Printf("Project %s Clone (END) \n%s\n\n", p.Name, out)
+			}
 
-//		cmd, _, _ := Git("-C", filepath.Join(relativePath, p.SourcePath), "checkout","-b",p.Revision, p.Revision)
-//		e = cmd.Run()
-//        if e!=nil {
-//            fmt.Printf("Project %s Clone (CLONE) cmd.Run(checkout) \n%s\n%v\n\n", p.Name, out, e)
-//            return e
-//        }
-//		cmd, _, _ := Git("-C", filepath.Join(relativePath, p.SourcePath), "remote", "rename", "origin", p.RemoteKey)
-//		e = cmd.Run()
-//        if e!=nil {
-//            ThereWasErrors = true
-//            fmt.Printf("Project %s Clone (CLONE) cmd.Run(remote) \n%s\n%v\n\n", p.Name, out, e)
-//            return e
-//        }
+		} else {
+			// Update HG and source
+			out, e := hgSync(filepath.Join(relativePath, p.SourcePath), p.RemoteKey, p.Revision, nil)
+			if e != nil {
+				ThereWasErrors = true
+				fmt.Printf("Project %s Synchronize (PULL error) \n%s\n%v\n\n", p.Name, out, e)
+				return e
+			}
+			fmt.Printf("Project %s Synchronize (PULL) \n%s\n\n", p.Name, out)
 
-	} else {
-        out, e := gitSync(filepath.Join(relativePath, p.SourcePath), p.RemoteKey, p.Revision, nil)
-        if e!=nil {
-            ThereWasErrors = true
-            fmt.Printf("Project %s Synchronize (PULL error) \n%s\n%v\n\n", p.Name, out, e)
-            return e
-        }
-        fmt.Printf("Project %s Synchronize (PULL) \n%s\n\n", p.Name, out)
-    }
+		}
 
+	}
+	case REPO_GIT :
+		if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".git")); e != nil {
+			args := []string{
+				"--branch", p.BranchRevision,
+				"-o", p.RemoteKey,
+			}
+			if p.CloneDepth != "" {
+				args = append(args, "--depth", p.CloneDepth)
+			}
+
+			if out, e := gitClone(p.Url, filepath.Join(relativePath, p.SourcePath), "", args); e != nil {
+				fmt.Printf("Project %s Clone (CLONE) Error \n%s\n%v\n\n", p.Name, out, e)
+				return e
+			} else {
+				fmt.Printf("Project %s Clone (END) \n%s\n\n", p.Name, out)
+			}
+
+
+		} else {
+			out, e := gitSync(filepath.Join(relativePath, p.SourcePath), p.RemoteKey, p.Revision, nil)
+			if e != nil {
+				ThereWasErrors = true
+				fmt.Printf("Project %s Synchronize (PULL error) \n%s\n%v\n\n", p.Name, out, e)
+				return e
+			}
+			fmt.Printf("Project %s Synchronize (PULL) \n%s\n\n", p.Name, out)
+		}
+	}
 	return
 }
 
 // Returns the status of the project
 func (p *Project) status() (err error) {
-	if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".git")); e == nil {
-		status, _ := gitStatus(filepath.Join(relativePath, p.SourcePath), nil)
-		fmt.Printf("** Project %s status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+	switch p.RepoType {
+	case REPO_HG:
+		if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".hg")); e == nil {
+			status, _ := hgStatus(filepath.Join(relativePath, p.SourcePath), nil)
+			fmt.Printf("** Project %s status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
 
-	} else {
-		fmt.Printf("Project %s missing\n", p.Name)
+		} else {
+			fmt.Printf("Project %s missing\n", p.Name)
+		}
+	case REPO_GIT:
+		if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".git")); e == nil {
+			status, _ := gitStatus(filepath.Join(relativePath, p.SourcePath), nil)
+			fmt.Printf("** Project %s status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+
+		} else {
+			fmt.Printf("Project %s missing\n", p.Name)
+		}
 	}
 	return
 }
@@ -466,6 +501,12 @@ func (r *Repo) Parse(id string, data []byte) (err error) {
 					}
 				} else {
 					url = joinURL(repo.Fetch , project.Name)
+				}
+
+				if repo.RepoType == "" {
+					project.RepoType = REPO_GIT
+				} else {
+					project.RepoType = repo.RepoType
 				}
 			}
             // Initialize calculate values
@@ -557,11 +598,32 @@ func gitClone(source, target, gitfolder string, args []string) (out string, err 
 	}
 	return stdout.String(), nil
 }
+// Called to checkout a project, creates the necessary path to target folder
+func hgClone(source, target string, args []string) (out string, err error) {
+	// fmt.Printf("Checking out " + source + " to " + target +" %#v\n", args)
+	cmd, stdout, stderr := Hg("clone", append(args, source, target)...)
+	if err = cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("Error running HG clone command %s", stderr.String())
+	}
+
+	return stdout.String(), nil
+}
 
 // Called to synchronize a project
 func gitSync(source, remote, revision string, args []string) (out string, err error) {
 
 	cmd, stdout, stderr := Git("-C", append([]string{source, "pull", remote, revision}, args...)...)
+
+	if err = cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("Error running clone command %s", stderr.String())
+	}
+
+	return stdout.String(), nil
+}
+// Called to synchronize a project
+func hgSync(source, remote, revision string, args []string) (out string, err error) {
+
+	cmd, stdout, stderr := Hg("-R", append([]string{source, "pull", "-u"}, args...)...)
 
 	if err = cmd.Run(); err != nil {
 		return stdout.String(), fmt.Errorf("Error running clone command %s", stderr.String())
@@ -581,6 +643,17 @@ func gitStatus(source string, args []string) (respons string, err error) {
 
 	return stdout.String(), nil
 }
+// Called to fetch a project status
+func hgStatus(source string, args []string) (respons string, err error) {
+
+	cmd, stdout, stderr := Hg("-R", append([]string{source, "status"}, args...)...)
+
+	if err = cmd.Run(); err != nil {
+		return "", fmt.Errorf("Error running clone command %s\n", stderr.String())
+	}
+
+	return stdout.String(), nil
+}
 
 // Called to perform all git commands
 func Git(cmd string, args ...string) (res *exec.Cmd, stdout, stderr *bytes.Buffer) {
@@ -591,6 +664,21 @@ func Git(cmd string, args ...string) (res *exec.Cmd, stdout, stderr *bytes.Buffe
 	res = exec.Command(gitCmd, cmdArgs...)
 	stdout, stderr = new(bytes.Buffer), new(bytes.Buffer)
 	stdout.WriteString(fmt.Sprintf("git %s %v\n", gitCmd, cmdArgs))
+	res.Stdout, res.Stderr = os.Stdout, os.Stderr // io.MultiWriter(stdout,os.Stdout), io.MultiWriter(stderr,os.Stderr)
+	go io.Copy(os.Stdout, stdout)
+	go io.Copy(os.Stderr, stderr)
+	return
+}
+
+// Called to perform all hg commands
+func Hg(cmd string, args ...string) (res *exec.Cmd, stdout, stderr *bytes.Buffer) {
+	cmdArgs := make([]string, 1)
+	cmdArgs[0] = cmd
+	cmdArgs = append(cmdArgs, args...)
+
+	res = exec.Command(hgCmd, cmdArgs...)
+	stdout, stderr = new(bytes.Buffer), new(bytes.Buffer)
+	stdout.WriteString(fmt.Sprintf("Running *** hg %s %v\n", hgCmd, cmdArgs))
 	res.Stdout, res.Stderr = os.Stdout, os.Stderr // io.MultiWriter(stdout,os.Stdout), io.MultiWriter(stderr,os.Stderr)
 	go io.Copy(os.Stdout, stdout)
 	go io.Copy(os.Stderr, stderr)

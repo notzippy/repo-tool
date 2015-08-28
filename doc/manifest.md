@@ -17,6 +17,7 @@ Understood manifest (Hopefully)
 			<!ELEMENT remote (EMPTY)>
 			<!ATTLIST remote name ID #REQUIRED>
 			<!ATTLIST remote fetch CDATA #REQUIRED>
+			<!ATTLIST remote repotype CDATA #REQUIRED>
 			<!ATTLIST remote revision CDATA #IMPLIED>
 
 		 <!ELEMENT default (EMPTY)>
@@ -28,6 +29,7 @@ Understood manifest (Hopefully)
 			<!ATTLIST project path CDATA #IMPLIED>
 			<!ATTLIST project remote IDREF #IMPLIED>
 			<!ATTLIST project revision CDATA #IMPLIED>
+			<!ATTLIST project repotype CDATA #IMPLIED>
 
 		 <!ELEMENT remove-project (EMPTY)>
 			<!ATTLIST remove-project name CDATA #REQUIRED>

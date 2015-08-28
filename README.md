@@ -28,4 +28,7 @@ Each project is checked out using the url, revision and path specified in the pr
 the branch is not in a detached state, it is pointing to the branch specified in the manifest file.
 
 [Updates]
-Added -j flag, applicable to both sync and init, defaults to 1 job, can be set higher
+* Add hg support, repotype attribute supported in both project and remote levels. Defaults to "git" supports "hg" as well
+* Added -j flag, applicable to both sync and init, defaults to 1 job (ie checkout one project at a time), can be set higher sub in a number after the j for example -j4 (checkout 4 projects at a time)
+* Added -g flag, applicable to init, checkout specific groups see manifest for details
+
