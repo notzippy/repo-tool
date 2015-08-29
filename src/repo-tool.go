@@ -265,7 +265,9 @@ func repoSync(existingRepo *Repo,osargs []string) (err error) {
 					if pnew.Path != p.Path {
 						destination := filepath.Join(relativePath, pnew.Path)
 						base := filepath.Base(destination)
-						os.MkdirAll(destination[:len(destination)-len(base)], os.ModePerm)
+						if err = os.MkdirAll(destination[:len(destination)-len(base)], os.ModePerm);err!=nil {
+							return
+						}
 						if err = os.Rename(filepath.Join(relativePath, p.Path), destination); err != nil {
 							return
 						}
@@ -612,18 +614,36 @@ func hgClone(source, target string, args []string) (out string, err error) {
 // Called to synchronize a project
 func gitSync(source, remote, revision string, args []string) (out string, err error) {
 
-	cmd, stdout, stderr := Git("-C", append([]string{source, "pull", remote, revision}, args...)...)
+	{
+		cmd, stdout, stderr := Git("-C", append([]string{source, "fetch", remote, revision}, args...)...)
 
+		if err = cmd.Run(); err != nil {
+			return stdout.String(), fmt.Errorf("Error running fetch command %s", stderr.String())
+		}
+	}
+
+	//cmd, stdout, stderr := Git("-C", append([]string{source, "status"}, args...)...)
+	checkoutArgs := []string{source,"checkout"}
+	if revision!="" {
+		checkoutArgs = []string{source,"checkout",revision}
+	}
+	cmd, stdout, stderr := Git("-C", append(checkoutArgs, args...)...)
 	if err = cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("Error running clone command %s", stderr.String())
+		return stdout.String(), fmt.Errorf("Error running checkout command %s", stderr.String())
 	}
 
 	return stdout.String(), nil
 }
 // Called to synchronize a project
 func hgSync(source, remote, revision string, args []string) (out string, err error) {
+	{
+		cmd, stdout, stderr := Hg("-R", append([]string{source, "pull"}, args...)...)
 
-	cmd, stdout, stderr := Hg("-R", append([]string{source, "pull", "-u"}, args...)...)
+		if err = cmd.Run(); err != nil {
+			return stdout.String(), fmt.Errorf("Error running clone command %s", stderr.String())
+		}
+	}
+	cmd, stdout, stderr := Hg("-R", append([]string{source, "checkout", revision}, args...)...)
 
 	if err = cmd.Run(); err != nil {
 		return stdout.String(), fmt.Errorf("Error running clone command %s", stderr.String())
