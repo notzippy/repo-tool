@@ -23,6 +23,7 @@ const baseRepo = ".repo-tool"
 const projectFile = ".repo-tool/projectRepo.json"
 
 var (
+	VERSION      = "0.2"
 	relativePath = ""
 	gitCmd       = "/usr/bin/git"
 	hgCmd        = "/usr/bin/hg"
@@ -740,7 +741,7 @@ func fetchRepo() (therepo *Repo,err error) {
 
 // Small help function
 func help() {
-	fmt.Println("You need help, try repo-tool init, repo-tool status or repo-tool sync.ie repo-tool init -u <manifest git url> for the manifest")
+	fmt.Printf("You need help (%s), try repo-tool init, repo-tool status or repo-tool sync.ie repo-tool init -u <manifest git url> for the manifest \n",VERSION)
 }
 
 // Assuming the base of the path is baseRepo
