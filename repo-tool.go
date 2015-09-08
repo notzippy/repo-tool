@@ -615,12 +615,16 @@ func hgClone(source, target string, args []string) (out string, err error) {
 // Called to synchronize a project
 func gitSync(source, remote, revision string, args []string) (out string, err error) {
 
-	{
-		cmd, stdout, stderr := Git("-C", append([]string{source, "fetch", remote, revision}, args...)...)
+	cmd, stdout, stderr := Git("-C", append([]string{source, "pull", remote, revision}, args...)...)
 
-		if err = cmd.Run(); err != nil {
-			return stdout.String(), fmt.Errorf("Error running fetch command %s", stderr.String())
-		}
+	if err = cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("Error running fetch command %s", stderr.String())
+	}
+	/*
+	cmd, stdout, stderr := Git("-C", append([]string{source, "fetch", remote, revision}, args...)...)
+
+	if err = cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("Error running fetch command %s", stderr.String())
 	}
 
 	//cmd, stdout, stderr := Git("-C", append([]string{source, "status"}, args...)...)
@@ -628,11 +632,18 @@ func gitSync(source, remote, revision string, args []string) (out string, err er
 	if revision!="" {
 		checkoutArgs = []string{source,"checkout",revision}
 	}
-	cmd, stdout, stderr := Git("-C", append(checkoutArgs, args...)...)
+
+	cmd, stdout, stderr = Git("-C", append(checkoutArgs, args...)...)
 	if err = cmd.Run(); err != nil {
 		return stdout.String(), fmt.Errorf("Error running checkout command %s", stderr.String())
 	}
 
+	cmd, stdout, stderr = Git("-C", append([]string{source, "pull", }, args...)...)
+
+	if err = cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("Error running pull command %s", stderr.String())
+	}
+	*/
 	return stdout.String(), nil
 }
 // Called to synchronize a project
