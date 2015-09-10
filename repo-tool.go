@@ -23,7 +23,7 @@ const baseRepo = ".repo-tool"
 const projectFile = ".repo-tool/projectRepo.json"
 
 var (
-	VERSION      = "0.2"
+	VERSION      = "0.3"
 	relativePath = ""
 	gitCmd       = "/usr/bin/git"
 	hgCmd        = "/usr/bin/hg"
@@ -352,8 +352,8 @@ func repoStatus() (err error) {
 			}
 
 		}(project)
+		wg.Wait()
 	}
-	wg.Wait()
 
 	return
 }
@@ -421,12 +421,14 @@ func (p *Project) checkout() (err error) {
 }
 
 // Returns the status of the project
-func (p *Project) status() (err error) {
+func (p *Project) status() (err error)  {
 	switch p.RepoType {
 	case REPO_HG:
 		if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".hg")); e == nil {
 			status, _ := hgStatus(filepath.Join(relativePath, p.SourcePath), nil)
-			fmt.Printf("** Project %s status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+			if !strings.Contains(status,"clean") {
+				fmt.Sprintf("** Project %s Not Clean status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+			}
 
 		} else {
 			fmt.Printf("Project %s missing\n", p.Name)
@@ -434,7 +436,9 @@ func (p *Project) status() (err error) {
 	case REPO_GIT:
 		if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".git")); e == nil {
 			status, _ := gitStatus(filepath.Join(relativePath, p.SourcePath), nil)
-			fmt.Printf("** Project %s status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+			if !strings.Contains(status,"clean") {
+				fmt.Printf("** Project %s Not Clean status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+			}
 
 		} else {
 			fmt.Printf("Project %s missing\n", p.Name)
