@@ -23,7 +23,7 @@ const baseRepo = ".repo-tool"
 const projectFile = ".repo-tool/projectRepo.json"
 
 var (
-	VERSION      = "0.3"
+	VERSION      = "0.4"
 	relativePath = ""
 	gitCmd       = "/usr/bin/git"
 	hgCmd        = "/usr/bin/hg"
@@ -269,9 +269,11 @@ func repoSync(existingRepo *Repo,osargs []string) (err error) {
 						if err = os.MkdirAll(destination[:len(destination)-len(base)], os.ModePerm);err!=nil {
 							return
 						}
-						if err = os.Rename(filepath.Join(relativePath, p.Path), destination); err != nil {
-							return
-						}
+                        if _, err := os.Stat(filepath.Join(relativePath, p.Path)); err==nil {
+                            if err = os.Rename(filepath.Join(relativePath, p.Path), destination); err != nil {
+                                return
+                            }
+                        }
 					}
 					found = true
 					break
@@ -290,8 +292,10 @@ func repoSync(existingRepo *Repo,osargs []string) (err error) {
                     base := filepath.Base(destination)
                     os.MkdirAll(destination[:len(destination)-len(base)], os.ModePerm)
                     fmt.Println("Moving project", p.Name, "Into .trash")
-                    if err = os.Rename(filepath.Join(relativePath, p.Path), destination); err != nil {
-                        return
+                    if _, err := os.Stat(filepath.Join(relativePath, p.Path)); err==nil {
+                        if err = os.Rename(filepath.Join(relativePath, p.Path), destination); err != nil {
+                            return
+                        }
                     }
                 }
 			}
