@@ -271,7 +271,7 @@ func repoSync(existingRepo *Repo,osargs []string) (err error) {
 						}
                         if _, err := os.Stat(filepath.Join(relativePath, p.Path)); err==nil {
                             if err = os.Rename(filepath.Join(relativePath, p.Path), destination); err != nil {
-                                return
+                                return err
                             }
                         }
 					}
@@ -294,7 +294,7 @@ func repoSync(existingRepo *Repo,osargs []string) (err error) {
                     fmt.Println("Moving project", p.Name, "Into .trash")
                     if _, err := os.Stat(filepath.Join(relativePath, p.Path)); err==nil {
                         if err = os.Rename(filepath.Join(relativePath, p.Path), destination); err != nil {
-                            return
+                            return  err
                         }
                     }
                 }
