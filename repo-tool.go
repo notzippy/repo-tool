@@ -25,7 +25,7 @@ const baseRepo = ".repo-tool"
 const projectFile = ".repo-tool/projectRepo.json"
 
 var (
-	VERSION        = "0.5"
+	VERSION        = "0.51"
 	relativePath   = ""
 	gitCmd         = "/usr/bin/git"
 	hgCmd          = "/usr/bin/hg"
@@ -181,10 +181,15 @@ func repoInit(config *Config) (err error) {
 			return err
 		}
 	} else {
-		if _, err = gitClone(config.URL,
+        var args []string
+        if len(config.Branch) > 0 {
+            args = append(args, "-b", config.Branch)
+        }
+        if _, err = gitClone(config.URL,
 			filepath.Join(relativePath, baseRepo, "manifests"),
 			"",
-			[]string{"-b " + config.Branch}); err != nil {
+            args,
+        ); err != nil {
 			return
 		}
 	}
@@ -678,7 +683,7 @@ func gitSync(source, remote, revision string, args []string) (out string, err er
 	//println("Looking for ", revision)
 	//println("**",stdout.String())
 
-	outputLines := strings.Split(stdout.String(), "\n")[1:]
+	outputLines := strings.Split(stdout.String(), "\n")
 	var currentBranch, currentRemoteRevision string
 	var revisionBranch string
 	var remoteLocalBranch string
@@ -829,12 +834,13 @@ func Git(cmd string, args ...string) (stdout *bytes.Buffer, err error) {
 
 	res := exec.Command(gitCmd, cmdArgs...)
 	stdout = new(bytes.Buffer)
-	stdout.WriteString(fmt.Sprintf("git %s %v\n", gitCmd, cmdArgs))
+	os.Stdout.WriteString(fmt.Sprintf("git %s %v\n", gitCmd, cmdArgs))
 	if f, err := pty.Start(res); err != nil {
 		return stdout, err
 	} else {
 		io.Copy(io.MultiWriter(stdout, os.Stdout), f)
 		if err = res.Wait(); err != nil {
+            os.Stdout.WriteString(fmt.Sprintf("Command git %s %v \n completed with error: %v \n", gitCmd, cmdArgs,err))
 			return stdout, err
 		}
 
