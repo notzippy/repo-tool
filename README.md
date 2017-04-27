@@ -10,7 +10,7 @@ Note it is *NOT* compatible with a project checked out using the git-repo tool, 
 
 As time passes this will become more complete, currently it only works with a single manifest (default.xml), you can do something like
 
-    repo init -b branch -u git@github.com/notzippy/some_test_manifest.git && repo sync
+    repo-tool init -u git@github.com/notzippy/some_test_manifest.git
     
 and volia you have a project folder with your repository tree nicely checked out in it.
 Besides `repo init` and `repo sync` `repo status` is also supported to let you know what state all the repositories are in.
