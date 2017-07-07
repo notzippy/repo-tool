@@ -36,15 +36,21 @@ const (
 	REPO_GIT = "git"
 	REPO_HG  = "hg"
 )
+/**
+Repotool file structure
+.repo-rool/projectRepo.json The project file as a json object
+.repo-tool/manifests/       The checkedout manifest
+.repo-tool/remotes          A directory of remote manifests
 
+ */
 type (
-    Config struct {
-        Command string
-        URL string
-        Branch string
-        Groups string
-        Threads int
-    }
+	Config struct {
+		Command string
+		URL     string
+		Branch  string
+		Groups  string
+		Threads int
+	}
 	Repo struct {
 		Root           string // The root checkout
 		Branch         string
@@ -52,6 +58,16 @@ type (
 		RemoteMap      map[string]*Remote  // Keyed by name
 		ProjectMap     map[string]*Project // Keyed by name
 		ProjectDefault *Project
+		ReferenceList  []*RepoReferences // A list of RepoReferences which are overlaid during this project checkout
+	}
+	// Additional remotes are repos, which are overlaid on this one.
+	// Rules are:
+	// If a repo has the same project path, then add the remote as a new remote for the repository
+	// If the
+	RepoReferences struct {
+		ReferenceURI       string // The reference URI
+		ReferenceStorageID string // This will be the path identifier for the repo
+		RemoteRepo         Repo   // The remote repo manifest
 	}
 	Manifest struct {
 		XMLName        xml.Name   `xml:"manifest"`
@@ -87,10 +103,10 @@ type (
 )
 
 func main() {
-	if git, err := exec.LookPath("git"); err != nil {
+	if gitPath, err := exec.LookPath("git"); err != nil {
 		panic("Cannot find git command!")
 	} else {
-		gitCmd = git
+		gitCmd = gitPath
 	}
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -98,8 +114,8 @@ func main() {
 		help()
 		return
 	}
-    config := &Config{Command:os.Args[1]}
-    	mySet := flag.NewFlagSet("", flag.ExitOnError)
+	config := &Config{Command: os.Args[1]}
+	mySet := flag.NewFlagSet("", flag.ExitOnError)
 	mySet.StringVar(&config.URL, "u", "", "a url")
 	mySet.StringVar(&config.Branch, "b", "", "a branch")
 	mySet.StringVar(&config.Groups, "g", "", "a group")
@@ -111,6 +127,14 @@ func main() {
 	case "init":
 		if err := repoInit(config); err != nil {
 			fmt.Println("Error init ", err)
+			ThereWasErrors = true
+		}
+	case "addremote":
+		if project, err := fetchRepo(); err != nil {
+			fmt.Println("Error read project ", err)
+			ThereWasErrors = true
+		} else if err := repoAddRemote(project, config); err != nil {
+			fmt.Println("Error Sync ", err)
 			ThereWasErrors = true
 		}
 	case "sync":
@@ -149,7 +173,6 @@ func repoInit(config *Config) (err error) {
 		return fmt.Errorf("Url required")
 	}
 
-
 	projectRepo := Repo{
 		Root:       config.URL,
 		Branch:     config.Branch,
@@ -158,9 +181,9 @@ func repoInit(config *Config) (err error) {
 		RemoteMap:  make(map[string]*Remote),
 	}
 
-    // Fetch the existing repo project manifest
+	// Fetch the existing repo project manifest
 	if project, err := fetchRepo(); err == nil {
-        // If it exists then update the url information as provided
+		// If it exists then update the url information as provided
 		project.Root = config.URL
 		project.Branch = config.Branch
 		project.GroupList = strings.Split(config.Groups, ",")
@@ -181,15 +204,15 @@ func repoInit(config *Config) (err error) {
 			return err
 		}
 	} else {
-        var args []string
-        if len(config.Branch) > 0 {
-            args = append(args, "-b", config.Branch)
-        }
-        if _, err = gitClone(config.URL,
+		var args []string
+		if len(config.Branch) > 0 {
+			args = append(args, "-b", config.Branch)
+		}
+		if _, err = gitClone(config.URL,
 			filepath.Join(relativePath, baseRepo, "manifests"),
 			"",
-            args,
-        ); err != nil {
+			args,
+		); err != nil {
 			return
 		}
 	}
@@ -236,15 +259,19 @@ func syncManifest(repo *Repo) (err error) {
 	}
 	return err
 }
+func repoAddRemote(existingRepo *Repo, config *Config) (err error) {
+
+	return
+}
 func repoSync(existingRepo *Repo, config *Config) (err error) {
 	multitasksLimit := 1
-	if config.Threads>0 {
-        multitasksLimit = config.Threads
+	if config.Threads > 0 {
+		multitasksLimit = config.Threads
 	}
-    if config.Branch!="" {
-        // Switch branch
-        existingRepo.Branch = config.Branch
-    }
+	if config.Branch != "" {
+		// Switch branch
+		existingRepo.Branch = config.Branch
+	}
 	fmt.Println("Limit is ", multitasksLimit)
 	if err = syncManifest(existingRepo); err != nil {
 		return err
@@ -292,7 +319,7 @@ func repoSync(existingRepo *Repo, config *Config) (err error) {
 				}
 			}
 
-			if found && !p.InGroupList(projectRepo.GroupList) {
+			if found && !p.InGroupList(projectRepo.ReferenceList, projectRepo.GroupList) {
 				// Force the removal of the project to the trash
 				found = false
 			}
@@ -320,7 +347,7 @@ func repoSync(existingRepo *Repo, config *Config) (err error) {
 	var mutex sync.Mutex
 	counter := 0
 	for _, project := range projectRepo.ProjectMap {
-		if project.InGroupList(projectRepo.GroupList) {
+		if project.InGroupList(projectRepo.ReferenceList, projectRepo.GroupList) {
 			wg.Add(1)
 			mutex.Lock()
 			counter++
@@ -546,7 +573,7 @@ func (r *Repo) Parse(id string, data []byte) (err error) {
 				BranchRevision = BranchRevision[len("refs/tags/"):]
 			}
 			project.BranchRevision = BranchRevision
-			project.GroupList = regexp.MustCompile(`[\ ,\,]`).Split(project.Groups, -1)
+			project.GroupList = regexp.MustCompile(`[\\ ,\\,]`).Split(project.Groups, -1)
 		}
 	}
 
@@ -562,22 +589,37 @@ func joinURL(parts ...string) string {
 // Returns true if project is in group list
 // if groupList to be checked is empty then
 // result is true unless this project contains a
-// group call `notdefault`
-func (p *Project) InGroupList(groupList []string) bool {
+// group call `notdefault`, if the references is not empty all the projects inside them will
+// be searched as well
+func (p *Project) InGroupList(references []*RepoReferences, groupList []string) (result bool) {
 	if len(groupList) == 0 {
 		// Exclude default Projects
-		return !p.HasGroup("notdefault")
+		result = !p.HasGroup("notdefault")
 	}
-
-	for _, g := range groupList {
-		if g == "" && !p.HasGroup("notdefault") {
-			return true
-		} else if p.HasGroup(g) {
-			return true
+	if !result {
+		for _, g := range groupList {
+			if g == "" && !p.HasGroup("notdefault") {
+				result = true
+				break
+			} else if p.HasGroup(g) {
+				result = true
+				break
+			}
+		}
+	}
+	if !result {
+		// Examine the RepoReferences to see if the project exists in them
+		for _,reference := range references {
+			for _,project := range reference.RemoteRepo.ProjectMap {
+				result = project.InGroupList(nil,groupList)
+				if result {
+					break
+				}
+			}
 		}
 	}
 
-	return false
+	return
 }
 
 // Return true if group is in this projects group list
@@ -594,7 +636,7 @@ func (p *Project) HasGroup(group string) bool {
 	return false
 }
 
-// Called to checkout a project, creates the neccessary path to target folder
+// Called to checkout a project, creates the necessary path to target folder
 func gitClone(source, target, gitfolder string, args []string) (out string, err error) {
 	// fmt.Printf("Checking out " + source + " to " + target +" %#v\n", args)
 	if len(gitfolder) > 0 {
@@ -619,6 +661,18 @@ func gitClone(source, target, gitfolder string, args []string) (out string, err 
 		os.Symlink(gitfolder, filepath.Join(target, ".git"))
 	}
 	return stdout.String(), nil
+}
+
+// Add remote to repository defined at the source
+func getRemoteAdd(uri, targetPath, remoteName string, args []string) (out string, err error) {
+	args = append(args, "-C", targetPath)
+	stdout, err := Git("remote add", append(args, remoteName, uri)...)
+	if err == nil {
+		// Fetch from the remote as well
+		stdout, err = Git("fetch", append(args, remoteName)...)
+
+	}
+	return stdout.String(), err
 }
 
 // Called to checkout a project, creates the necessary path to target folder
@@ -674,7 +728,7 @@ func gitSync(source, remote, revision string, args []string) (out string, err er
 	branchCatcher, _ := regexp.Compile("\\[(.*)/(.*)?\\]")
 	// cmd, stdout, stderr := Git("-C", append([]string{source, "checkout", "-b", revision, remote+"/"+revision}, args...)...)
 	// Three scenarios, we need to check the local branch first
-    println("\nCurrent configuration")
+	println("\nCurrent configuration")
 	stdout, err := Git("-C", append([]string{source, "branch", "-vv"}, args...)...)
 	if err != nil {
 		return "gitSync error", err
@@ -692,18 +746,21 @@ func gitSync(source, remote, revision string, args []string) (out string, err er
 		if strings.TrimSpace(out) == "" {
 			continue
 		}
-		branch := strings.Split(strings.TrimSpace(string(out[1:])), " ")[0][5:]
+		branch := strings.Split(strings.TrimSpace(string(out[1:])), " ")[0]
 		matches := branchCatcher.FindAllStringSubmatch(out, -1)
-		branchRevision := strings.TrimSpace(strings.Split(matches[0][2], ":")[0])
-		if out[:1] == "*" {
-			currentBranch = branch
-			currentRemoteRevision = branchRevision
-		}
-		if branch == revision && branchRevision == revision {
-			revisionBranch = branch
-		}
-		if branchRevision == revision {
-			remoteLocalBranch = branch
+		// If no upstream version then we cannot track it
+		if len(matches)>0 {
+			branchRevision := strings.TrimSpace(strings.Split(matches[0][2], ":")[0])
+			if out[:1] == "*" {
+				currentBranch = branch
+				currentRemoteRevision = branchRevision
+			}
+			if branch == revision && branchRevision == revision {
+				revisionBranch = branch
+			}
+			if branchRevision == revision {
+				remoteLocalBranch = branch
+			}
 		}
 	}
 	//println(currentBranch,"-a",currentRemoteRevision,"-b")
@@ -735,7 +792,7 @@ func gitSync(source, remote, revision string, args []string) (out string, err er
 		return stdout.String(), fmt.Errorf("Error running fetch command %s", err.Error())
 	}
 
-    println("\nAfter synchronize")
+	println("\nAfter synchronize")
 	stdout, err = Git("-C", append([]string{source, "branch", "-vv"}, args...)...)
 	if err != nil {
 		return "gitSync error", err
@@ -767,6 +824,7 @@ func gitSync(source, remote, revision string, args []string) (out string, err er
 	*/
 	return stdout.String(), nil
 }
+
 func stripCtlAndExtFromBytes(str string) string {
 	b := make([]byte, len(str))
 	var bl int
@@ -840,7 +898,7 @@ func Git(cmd string, args ...string) (stdout *bytes.Buffer, err error) {
 	} else {
 		io.Copy(io.MultiWriter(stdout, os.Stdout), f)
 		if err = res.Wait(); err != nil {
-            os.Stdout.WriteString(fmt.Sprintf("Command git %s %v \n completed with error: %v \n", gitCmd, cmdArgs,err))
+			os.Stdout.WriteString(fmt.Sprintf("Command git %s %v \n completed with error: %v \n", gitCmd, cmdArgs, err))
 			return stdout, err
 		}
 
