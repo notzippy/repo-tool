@@ -17,19 +17,18 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
+	"errors"
 )
 
 const baseRepo = ".repo-tool"
 const projectFile = ".repo-tool/projectRepo.json"
 
 var (
-	VERSION        = "0.51"
+	VERSION        = "0.52"
 	relativePath   = ""
 	gitCmd         = "/usr/bin/git"
 	hgCmd          = "/usr/bin/hg"
-	ThereWasErrors = false
 )
 
 const (
@@ -50,6 +49,7 @@ type (
 		Branch  string
 		Groups  string
 		Threads int
+		NoSync  bool
 	}
 	Repo struct {
 		Root           string // The root checkout
@@ -116,37 +116,44 @@ func main() {
 	}
 	config := &Config{Command: os.Args[1]}
 	mySet := flag.NewFlagSet("", flag.ExitOnError)
-	mySet.StringVar(&config.URL, "u", "", "a url")
-	mySet.StringVar(&config.Branch, "b", "", "a branch")
-	mySet.StringVar(&config.Groups, "g", "", "a group")
+	mySet.StringVar(&config.URL, "u", "", "The url to intialize, only applicable for init")
+	mySet.StringVar(&config.Branch, "b", "", "The branch to checkout")
+	mySet.StringVar(&config.Groups, "g", "", "The group to checkout")
+	mySet.BoolVar(&config.NoSync, "no-sync", false, "Turn off sync applicable only for init")
+	mySet.IntVar(&config.Threads, "j", 1, "Number of threads to use")
 	mySet.Parse(os.Args[2:])
+	if config.Threads<0 {
+		config.Threads = 1
+	}
 
 	start := time.Now()
 	fmt.Printf("Start time %s\n", start.Format(time.ANSIC))
+	foundErrors := false
 	switch config.Command {
 	case "init":
 		if err := repoInit(config); err != nil {
 			fmt.Println("Error init ", err)
-			ThereWasErrors = true
+			foundErrors = true
 		}
 	case "addremote":
 		if project, err := fetchRepo(); err != nil {
 			fmt.Println("Error read project ", err)
-			ThereWasErrors = true
+			foundErrors = true
 		} else if err := repoAddRemote(project, config); err != nil {
 			fmt.Println("Error Sync ", err)
-			ThereWasErrors = true
+			foundErrors = true
 		}
 	case "sync":
 		if project, err := fetchRepo(); err != nil {
 			fmt.Println("Error read project ", err)
-			ThereWasErrors = true
+			foundErrors = true
 		} else if err := repoSync(project, config); err != nil {
 			fmt.Println("Error Sync ", err)
-			ThereWasErrors = true
+			foundErrors = true
 		}
 	case "status":
-		if err := repoStatus(); err != nil {
+		if err := repoStatus(config); err != nil {
+			foundErrors = true
 			fmt.Println("Error Status ", err)
 		}
 	default:
@@ -156,7 +163,7 @@ func main() {
 	end := time.Now()
 	fmt.Printf("End time %s\n", end.Format(time.ANSIC))
 	fmt.Printf("End time %2.4f minutes\n", end.Sub(start).Minutes())
-	if ThereWasErrors {
+	if foundErrors {
 		fmt.Println("There was errors detected, please check messages")
 	} else {
 		fmt.Println("Success - no errors detected")
@@ -171,6 +178,11 @@ func repoInit(config *Config) (err error) {
 
 	if len(config.URL) == 0 {
 		return fmt.Errorf("Url required")
+	}
+
+	// Ensure master branch is defaulted to in the config
+	if config.Branch=="" {
+		config.Branch = "master"
 	}
 
 	projectRepo := Repo{
@@ -221,6 +233,9 @@ func repoInit(config *Config) (err error) {
 	if err = writeProject(&projectRepo); err != nil {
 		return
 	}
+	if config.NoSync {
+		return nil
+	}
 	return repoSync(&projectRepo, config)
 }
 
@@ -264,15 +279,11 @@ func repoAddRemote(existingRepo *Repo, config *Config) (err error) {
 	return
 }
 func repoSync(existingRepo *Repo, config *Config) (err error) {
-	multitasksLimit := 1
-	if config.Threads > 0 {
-		multitasksLimit = config.Threads
-	}
 	if config.Branch != "" {
 		// Switch branch
 		existingRepo.Branch = config.Branch
 	}
-	fmt.Println("Limit is ", multitasksLimit)
+	fmt.Println("Limit is ", config.Threads)
 	if err = syncManifest(existingRepo); err != nil {
 		return err
 	}
@@ -340,69 +351,104 @@ func repoSync(existingRepo *Repo, config *Config) (err error) {
 			}
 		}
 	}
+
+	// Store project
 	writeProject(&projectRepo)
 
 	// For each item in the repo checkout the source tree
-	var wg sync.WaitGroup
-	var mutex sync.Mutex
-	counter := 0
+	jobs, consumer := createProjectWorkers(config.Threads, WORK_CHECKOUT)
+
 	for _, project := range projectRepo.ProjectMap {
 		if project.InGroupList(projectRepo.ReferenceList, projectRepo.GroupList) {
-			wg.Add(1)
-			mutex.Lock()
-			counter++
-			mutex.Unlock()
-			go func(mproject *Project) {
-				defer wg.Done()
-				defer func() {
-					mutex.Lock()
-					counter--
-					mutex.Unlock()
-				}()
-
-				if e := mproject.checkout(); e != nil {
-					ThereWasErrors = true
-					fmt.Println("Error sync ", mproject.Name, err)
-				}
-
-			}(project)
-			if counter >= multitasksLimit {
-				wg.Wait()
-			}
+			jobs <- project
 		} else {
 			fmt.Println("Skipping project", project.Name, projectRepo.GroupList)
 		}
 	}
-	wg.Wait()
+	close(jobs)
+	consumerErrorList := <- consumer
+	if len(consumerErrorList)>0 {
+		for _, ce := range consumerErrorList {
+			e := ce.([]interface{})
+			project,output,err := e[0].(*Project),e[1].(string),e[2]
+			fmt.Println("Error Project ", project.Name, project.BranchRevision, project.Path)
+			fmt.Println("Output ", output)
+			fmt.Println("Error " , err)
+		}
+		return errors.New("Checkout errors occurred")
+	}
 
 	return
 }
-func repoStatus() (err error) {
+const (
+	WORK_CHECKOUT = iota
+	WORK_STATUS
+)
+func createProjectWorkers(amount int, workType int) (jobs chan *Project,  errorConsumer chan []interface{}) {
+	jobs = make(chan *Project, 100)
+	errorConsumer = make(chan []interface{}, 100)
+	errorOutput := make(chan []interface{}, 100)
+	for w:=1; w<= amount; w++ {
+		go projectWorker(w, workType,jobs,errorOutput)
+	}
+	// Start the consumer channel as well
+	go checkoutProjectErrorConsumer(errorOutput, errorConsumer)
+	return
+}
+func checkoutProjectErrorConsumer( errorOutput chan []interface{}, errorConsumer chan []interface{}) {
+	errorList := []interface{}{}
+	for e := range errorOutput {
+		errorList = append(errorList,e)
+	}
+	println("Returning error list")
+	errorConsumer <- errorList
+}
+func projectWorker(id, workType int, jobs chan *Project, errorOutput chan []interface{}) {
+	for job := range jobs {
+		fmt.Println("Worker",id, "project", job.Name, "workType", workType)
+		switch (workType) {
+		case WORK_CHECKOUT:
+			if output,err := job.checkout();err!=nil {
+				errorOutput <- []interface{}{job,output, err}
+			}
+		case WORK_STATUS:
+			if output,err := job.status();err!=nil {
+				errorOutput <- []interface{}{job,output, err}
+			}
+		}
+		fmt.Println("Completed Worker",id, "project", job.Name, "workType", workType)
+	}
+	close(errorOutput)
+}
+func repoStatus(config *Config) (err error) {
 	// read in the project repo
 	var projectRepo *Repo
 	if projectRepo, err = fetchRepo(); err != nil {
 		return
 	}
+	jobs, consumer := createProjectWorkers(config.Threads, WORK_STATUS)
 
 	// For each item in the repo checkout the source tree
-	var wg sync.WaitGroup
 	for _, project := range projectRepo.ProjectMap {
-		wg.Add(1)
-		go func(mproject *Project) {
-			defer wg.Done()
-			if e := mproject.status(); e != nil {
-				fmt.Println("Error status ", mproject.Name, err)
-			}
-
-		}(project)
-		wg.Wait()
+		jobs <- project
+	}
+	close(jobs)
+	consumerErrorList := <- consumer
+	if len(consumerErrorList)>0 {
+		for _, ce := range consumerErrorList {
+			e := ce.([]interface{})
+			project,output,err := e[0].(*Project),e[1].(string),e[2]
+			fmt.Println("Unclean Project ", project.Name, project.BranchRevision, project.Path)
+			fmt.Println("Output ", output)
+			fmt.Println("Error " , err)
+		}
 	}
 
 	return
 }
 
 // Checkout project, clones then does a checkout -b revision
-func (p *Project) checkout() (err error) {
+func (p *Project) checkout() (output string, err error) {
 	fmt.Println("Checkout ", p.RepoType)
 	switch p.RepoType {
 	case REPO_HG:
@@ -414,7 +460,7 @@ func (p *Project) checkout() (err error) {
 				}
 				if out, e := hgClone(p.Url, filepath.Join(relativePath, p.SourcePath), args); e != nil {
 					fmt.Printf("Project %s Clone (CLONE) Error \n%s\n%v\n\n", p.Name, out, e)
-					return e
+					return out,e
 				} else {
 					fmt.Printf("Project %s Clone (END) \n%s\n\n", p.Name, out)
 				}
@@ -423,9 +469,8 @@ func (p *Project) checkout() (err error) {
 				// Update HG and source
 				out, e := hgSync(filepath.Join(relativePath, p.SourcePath), p.RemoteKey, p.Revision, nil)
 				if e != nil {
-					ThereWasErrors = true
 					fmt.Printf("Project %s Synchronize (PULL error) \n%s\n%v\n\n", p.Name, out, e)
-					return e
+					return out,e
 				}
 				fmt.Printf("Project %s Synchronize (PULL) \n%s\n\n", p.Name, out)
 
@@ -444,7 +489,7 @@ func (p *Project) checkout() (err error) {
 
 			if out, e := gitClone(p.Url, filepath.Join(relativePath, p.SourcePath), "", args); e != nil {
 				fmt.Printf("Project %s Clone (CLONE) Error \n%s\n%v\n\n", p.Name, out, e)
-				return e
+				return out,e
 			} else {
 				fmt.Printf("Project %s Clone (END) \n%s\n\n", p.Name, out)
 			}
@@ -452,9 +497,8 @@ func (p *Project) checkout() (err error) {
 		} else {
 			out, e := gitSync(filepath.Join(relativePath, p.SourcePath), p.RemoteKey, p.Revision, nil)
 			if e != nil {
-				ThereWasErrors = true
 				fmt.Printf("Project %s Synchronize (PULL error) \n%s\n%v\n\n", p.Name, out, e)
-				return e
+				return out,e
 			}
 			fmt.Printf("Project %s Synchronize (PULL) \n%s\n\n", p.Name, out)
 		}
@@ -463,27 +507,35 @@ func (p *Project) checkout() (err error) {
 }
 
 // Returns the status of the project
-func (p *Project) status() (err error) {
+func (p *Project) status() (out string, err error) {
 	switch p.RepoType {
 	case REPO_HG:
 		if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".hg")); e == nil {
 			status, _ := hgStatus(filepath.Join(relativePath, p.SourcePath), nil)
 			if !strings.Contains(status, "clean") {
 				fmt.Sprintf("** Project %s Not Clean status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+				out = fmt.Sprintf("** Project %s Not Clean status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+				err = errors.New(out)
 			}
 
 		} else {
 			fmt.Printf("Project %s missing\n", p.Name)
+			out = fmt.Sprintf("Project %s missing\n", p.Name)
+			err = errors.New(out)
 		}
 	case REPO_GIT:
 		if _, e := os.Stat(filepath.Join(filepath.Join(relativePath, p.SourcePath), ".git")); e == nil {
 			status, _ := gitStatus(filepath.Join(relativePath, p.SourcePath), nil)
 			if !strings.Contains(status, "clean") {
 				fmt.Printf("** Project %s Not Clean status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+				out = fmt.Sprintf("** Project %s Not Clean status **\n%s\n** END Project %s status (path %s) **\n\n", p.Name, status, p.Name, p.Path)
+				err = errors.New(out)
 			}
 
 		} else {
 			fmt.Printf("Project %s missing\n", p.Name)
+			out = fmt.Sprintf("Project %s missing\n", p.Name)
+			err = errors.New(out)
 		}
 	}
 	return
@@ -742,12 +794,15 @@ func gitSync(source, remote, revision string, args []string) (out string, err er
 	var revisionBranch string
 	var remoteLocalBranch string
 	for _, out := range outputLines {
+		//println("Line",out)
 		out = stripCtlAndExtFromBytes(out)
+		//println("After Line",out)
 		if strings.TrimSpace(out) == "" {
 			continue
 		}
 		branch := strings.Split(strings.TrimSpace(string(out[1:])), " ")[0]
 		matches := branchCatcher.FindAllStringSubmatch(out, -1)
+		//println("checking \n",out,"\nbranch",branch,"matches",len(matches),"\n",out[:1])
 		// If no upstream version then we cannot track it
 		if len(matches)>0 {
 			branchRevision := strings.TrimSpace(strings.Split(matches[0][2], ":")[0])
