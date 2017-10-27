@@ -753,7 +753,7 @@ func gitSyncNew(source, remote, revision string, args []string) (out string, err
 		if ref.Type() == plumbing.SymbolicReference {
 			print("s")
 		}
-		println(ref.IsBranch(), ref.IsRemote(), ref.IsTag(), ref.String(), "->", ref.Target().String())
+		//println(ref.IsBranch(), ref.IsRemote(), ref.IsTag(), ref.String(), "->", ref.Target().String())
 		return nil
 	})
 	localRevision := head.Name().Short()
