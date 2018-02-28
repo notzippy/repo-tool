@@ -885,7 +885,7 @@ func stripCtlAndExtFromBytes(str string) string {
 	var bl int
 	for i := 0; i < len(str); i++ {
 		c := str[i]
-		if c == 27 {
+		if c == 27 && len(str)>i+2 {
 			if str[i+2] == 51 {
 				i += 2
 			}
